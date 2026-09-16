@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: camp-assistant-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/chat_memory.db:/app/chat_memory.db
+      - ./backend/camp_knowledge.txt:/app/camp_knowledge.txt
+      - ./frontend:/app/frontend
+    environment:
+      - RUNNING_IN_DOCKER=true
+      - FRONTEND_DIR=/app/frontend
+      # Cloud LLM API Settings (OpenAI, Groq, OpenRouter, etc.)
+      - LLM_PROVIDER=${LLM_PROVIDER:-openai}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_BASE_URL=${LLM_BASE_URL:-https://api.openai.com/v1}
+      - LLM_MODEL=${LLM_MODEL:-gpt-4o-mini}
+      # Local Ollama Fallback (if LLM_PROVIDER=ollama)
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      - BRIDGE_API_URL=http://bridge:3001
+      - RATE_LIMIT_PER_MINUTE=${RATE_LIMIT_PER_MINUTE:-5}
+      - RATE_LIMIT_DAILY=${RATE_LIMIT_DAILY:-30}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  bridge:
+    build:
+      context: ./bridge
+      dockerfile: Dockerfile
+    container_name: camp-assistant-bridge
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3001:3001"
+    volumes:
+      - ./bridge/.wwebjs_auth:/app/.wwebjs_auth
+    environment:
+      - PORT=3001
+      - PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+      - PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+      - BACKEND_WEBHOOK_URL=http://backend:8000/webhook
+      - TRIGGER_PREFIX=${TRIGGER_PREFIX:--test}
+    depends_on:
+      - backend
+
+  # (Optional) Local Ollama container. Only started if using: docker compose --profile local-ollama up -d
+  ollama:
+    image: ollama/ollama:latest
+    container_name: camp-assistant-ollama
+    restart: unless-stopped
+    profiles:
+      - local-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+volumes:
+  ollama_data:
