@@ -1,166 +1,74 @@
-# hospitality-ai-agent
+# Hospitality AI Agent
 
-Autonomous WhatsApp conversational agent, moderation gateway, and live management console for hospitality accommodation inquiries.
+A WhatsApp guest assistant for campground and accommodation operators, with a browser console for conversation oversight and staff handoff.
 
-## Overview
+The assistant answers routine questions using a property knowledge base, groups fragmented WhatsApp messages into one turn, and flags reservation leads and requests that need a person. Operators can inspect conversation history, change the knowledge base, and pause automated replies.
 
-WhatsApp Camp Bot POC is an autonomous communication service designed for campground and hospitality operators. It connects WhatsApp Web client instances with an asynchronous Python FastAPI backend, aggregates rapid fragmented incoming messages using a sliding debounce buffer, validates inputs against prompt injection and scope guardrails, evaluates customer reservation intent, and dispatches LLM-generated responses while maintaining live oversight via a local browser console.
-
-## Architecture and Pipeline
-
-The application decouples WhatsApp protocol interaction from business logic using a dual-process architecture.
+## Architecture and message pipeline
 
 ```mermaid
 flowchart LR
-    A[WhatsApp Client Session] --> B[Node.js WWebJS Bridge]
-    B --> C[Sliding Debounce Queue: 3-5s]
-    C --> D[FastAPI Webhook Handler: /webhook]
-    D --> E[Security Guardrails and Prompt Injection Defense]
-    E --> F[Session Context and SQLite State: chat_memory.db]
-    F --> G[Dynamic Knowledge Base Prompt Assembly]
-    G --> H[LLM Provider: OpenAI / Groq / Ollama]
-    H --> I[Response Dispatcher]
-    I --> B
-    B --> A
-    E -->|Staff Intervention Needed| J[Push Notification Dispatch: ntfy.sh]
-    E -->|Lead Tagged| K[Operator Management Dashboard]
+    Guest["WhatsApp guest"] --> Bridge["Node.js WhatsApp Web bridge"]
+    Bridge --> Buffer["Per-chat debounce buffer"]
+    Buffer --> API["FastAPI webhook"]
+    API --> Check{"Input checks and chat state"}
+    Check -->|Eligible turn| Prompt["Knowledge and conversation context"]
+    Prompt --> Model["Configured language model"]
+    Model --> Action["Reply cleanup and action selection"]
+    Check -->|Suppressed or refused| Result["Webhook result"]
+    Action --> Result
+    Result --> Bridge
+    Bridge --> Guest
+    API <--> State[("SQLite conversations, leads and settings")]
+    Action -->|Lead or handoff| Alert["Staff notification"]
+    Console["Operator console"] <--> API
 ```
 
-- Ingestion Layer: A Node.js service running `whatsapp-web.js` maintains headless browser sessions via Chromium, receiving inbound messages via WebSocket events.
-- Debounce Aggregation: Messages arriving in rapid succession from the same user are buffered in memory for 3 to 5 seconds to merge multi-part messages into a single conversational turn.
-- Security Filter: The Python backend validates payloads for token length, injection patterns, repetitive loops, and blacklisted input tokens before query assembly.
-- Context Assembly: System instructions pull accommodation pricing, curfew rules, amenity details, and check-in policies dynamically from local persistent storage or markdown knowledge files.
-- Model Inference: Inquiries route to configured cloud providers (OpenAI, Groq, Gemini) or a local Ollama instance with fallback timeout handling.
-- Intervention & Alerts: High-urgency inquiries or user-requested agent handoffs trigger automated push notifications via `ntfy.sh` and toggle human-override flags in the database.
+1. The bridge uses `whatsapp-web.js` and Chromium to maintain the WhatsApp Web session. Incoming messages reset a per-chat timer, whose initial window is 30 seconds and can be changed in the dashboard.
+2. The backend checks chat state, rate limits, and message safety before generation. Eligible turns are assembled with active property knowledge and conversation history.
+3. The backend removes internal action tags before sending the reply to the bridge. A reservation lead or staff handoff can trigger an alert and temporarily pause automated replies for the chat.
 
-## Tech Stack
+## Local setup
 
-| Component | Technology | Description |
-| :--- | :--- | :--- |
-| Backend Framework | Python 3.10+, FastAPI, Uvicorn | Asynchronous HTTP server and REST endpoints |
-| Protocol Bridge | Node.js 18+, whatsapp-web.js | WhatsApp Web protocol driver and session keeper |
-| Persistence | SQLite3 (WAL mode) | Local relational storage for turns, leads, and configuration |
-| Network Client | HTTPX | Asynchronous API client for external model providers |
-| Guardrails / Validation | Pydantic v2, Regex | Input validation and intent classification rules |
-| Operator Interface | HTML5, Vanilla JavaScript, CSS3 | Single-page monitoring dashboard and live chat hub |
+Use Python 3.10+, Node.js 18+ with npm, and a Chromium installation available to Puppeteer. Start from the repository root in PowerShell.
 
-## Project Structure
-
-```text
-whatsapp-camp-bot-poc/
-├── .env.example              # Configuration environment template
-├── .gitignore                # Source control ignore rules
-├── README.md                 # Technical documentation
-├── DEPLOYMENT.md             # Server deployment specifications
-├── docker-compose.yml        # Container composition (bridge + backend)
-├── requirements.txt          # Python dependency manifest
-├── backend/                  # Python core service
-│   ├── main.py               # FastAPI entrypoint, webhook and API routes
-│   ├── config.py             # Configuration loader and environment bindings
-│   ├── security.py           # Guardrails, rate limits, and injection defense
-│   ├── notifier.py           # Notification dispatcher (ntfy integration)
-│   ├── camp_knowledge.txt    # Base operational knowledge file
-│   ├── requirements.txt      # Backend package manifest
-│   └── test_backend.py       # Automated unit test suite
-├── bridge/                   # Node.js communication bridge
-│   ├── package.json          # Node dependencies (whatsapp-web.js, qrcode)
-│   └── index.js              # Session listener and HTTP dispatcher
-├── frontend/                 # Management web UI
-│   ├── index.html            # Operator console and prompt editor
-│   └── app.js                # Live polling, session controls, and chat feed
-├── scripts/                  # Diagnostics, health checks, and sync scripts
-├── start_all.bat             # Simultaneous local startup script
-└── stop_all.bat              # Process termination utility
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+npm --prefix bridge ci
+Copy-Item .env.example .env
 ```
 
-## Setup and Prerequisites
+Edit `.env` before starting. Set a unique `PANEL_PASSWORD` and choose your model provider. Start FastAPI from `backend/`, where its application imports resolve.
 
-### Prerequisites
-- Python 3.10 or higher
-- Node.js 18 or higher (with npm)
-- Google Chrome or Chromium installed (required by Puppeteer)
-
-### Installation
-
-1. Navigate to the project root:
-   ```bash
-   cd c:/Tools/whatsapp-camp-bot-poc
-   ```
-
-2. Configure Python environment:
-   ```bash
-   python -m venv .venv
-   .venv\Scripts\activate
-   pip install -r requirements.txt
-   ```
-
-3. Install Node.js bridge dependencies:
-   ```bash
-   cd bridge
-   npm install
-   cd ..
-   ```
-
-4. Configure environment variables:
-   ```bash
-   copy .env.example .env
-   ```
-
-5. Set your LLM provider credentials in `.env`:
-   ```ini
-   LLM_PROVIDER=openai
-   LLM_API_KEY=your_api_key_here
-   LLM_MODEL=gpt-4o-mini
-   ```
-
-## Usage Examples
-
-### Starting Local Services
-To start both backend and bridge instances concurrently on Windows:
-```bash
-start_all.bat
+```powershell
+Set-Location backend
+..\.venv\Scripts\python.exe -m uvicorn main:app --host 127.0.0.1 --port 8000
 ```
 
-Alternatively, run services independently in separate terminals:
+Open the operator console at `http://127.0.0.1:8000/`. The backend attempts to start the installed bridge if it is absent. If running it separately, use `npm --prefix bridge start` from the repository root and start it before FastAPI. Pair a test WhatsApp account using the console's QR or phone pairing flow, then send a message matching the configured trigger prefix. Check `/health` for backend status and the console for bridge and conversation state.
 
-Terminal 1 (Python Backend):
-```bash
-python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
-```
+## Configuration
 
-Terminal 2 (Node.js WhatsApp Bridge):
-```bash
-cd bridge
-node index.js
-```
+| Setting | Purpose |
+| --- | --- |
+| `PANEL_PASSWORD` | Dashboard login. Supply your own value before the first start. |
+| `LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY` | Provider and model selection. The configuration handles Ollama, OpenAI, Groq, Gemini and OpenRouter. Supply a key for hosted providers. |
+| `OLLAMA_BASE_URL` | Local Ollama server address when using Ollama. |
+| `TRIGGER_PREFIX` | Bridge test prefix, initially `-test` unless configured otherwise. |
+| `DATABASE_PATH`, `AUTH_DATA_PATH` | SQLite state and WhatsApp browser session storage. |
+| `BACKEND_WEBHOOK_URL`, `BRIDGE_API_URL` | Internal addresses connecting the bridge and backend. |
 
-### Accessing the Management Console
-Open your browser and navigate to:
-```text
-http://127.0.0.1:8000/
-```
-Scan the terminal QR code or use the web dashboard to pair your WhatsApp session via 8-digit pairing code.
+The browser session, SQLite database and audit logs can contain credentials or guest data. Keep them private and keep the bridge and webhook on a trusted local network. The deployment guide covers container configuration and operational details. [Environment template](.env.example) · [Deployment guide](DEPLOYMENT.md)
 
-### Running Test Verification
-Execute test scenarios:
-```bash
-pytest backend/test_backend.py
-```
+## Code map
 
-### Core Configuration Parameters
+| Component | Responsibility |
+| --- | --- |
+| [WhatsApp bridge](bridge/index.js) | Session pairing, buffering, and delivery |
+| [FastAPI app](backend/main.py) | Webhook, model calls, staff handoff, and console endpoints |
+| [Guardrails](backend/security.py) and [database](backend/database.py) | Input checks, audit handling and local persistence |
+| [Knowledge base](backend/camp_knowledge.txt) and [notifications](backend/notifier.py) | Default property facts and staff alerts |
+| [Operator console](frontend/) | Conversation review, filters and configuration |
 
-| Variable | Default Value | Description |
-| :--- | :--- | :--- |
-| `HOST` | `0.0.0.0` | IP address binding for backend server |
-| `PORT` | `8000` | Port for backend server |
-| `DATABASE_PATH` | `chat_memory.db` | Path to local SQLite storage file |
-| `LLM_PROVIDER` | `openai` | Active provider: `openai`, `groq`, `ollama` |
-| `LLM_API_KEY` | None | API authentication key |
-| `LLM_MODEL` | `gpt-4o-mini` | Target language model |
-| `RATE_LIMIT_PER_MINUTE`| `5` | Inbound rate limit cap per telephone number |
-
-## Notes and Constraints
-
-- WhatsApp Web Session Persistence: Credentials are stored under `.wwebjs_auth`. Do not commit or share this directory; deleting it requires re-pairing via QR or code.
-- Concurrency Limits: Rate limits restrict incoming messages to 5 requests per minute per phone number to mitigate spam and accidental loop conditions.
-- SQLite Concurrency: Local storage operates in WAL mode with a 5-second busy timeout to safely accommodate simultaneous reads from the dashboard and writes from webhook workers.
+From `backend/`, run `..\.venv\Scripts\python.exe -m pytest test_unit.py` for the database lifecycle test. Review the [integration test](backend/test_backend.py) before running it against a live local instance.
